@@ -14,6 +14,7 @@ import { MemoryCacheBackend } from './backends/memory';
 import { FileCacheBackend } from './backends/file';
 import { createRedisBackend } from './backends/redis';
 import { createCloudflareKVBackend } from './backends/cloudflareKV';
+import { createValkeyBackend } from './backends/valkey';
 // Using console.log for now to avoid build issues
 const logger = {
   debug: (msg: string, ...args: any[]) =>
@@ -46,6 +47,12 @@ export class CacheService {
   constructor(config: CacheConfig) {
     this.defaultTtl = config.defaultTtl;
     this.backend = this.createBackend(config);
+  }
+
+  /** Replace the active backend, closing the previous one to prevent timer/resource leaks. */
+  setBackend(backend: CacheBackend): void {
+    this.backend.close?.();
+    this.backend = backend;
   }
 
   private createBackend(config: CacheConfig): CacheBackend {
@@ -81,6 +88,12 @@ export class CacheService {
           config.kvBindingName,
           config.dbName
         );
+
+      case 'valkey':
+        // Backend is injected post-construction by createCacheBackendsValkey()
+        // after the async GLIDE client is created. Return a memory placeholder
+        // that will be replaced before any requests are served.
+        return new MemoryCacheBackend();
 
       default:
         throw new Error(`Unsupported cache backend: ${config.backend}`);
@@ -435,6 +448,79 @@ export function createCacheBackendsRedis(redisUrl: string): void {
     dbName: 'mcp',
     defaultTtl: undefined,
   });
+}
+
+function redactConnectionString(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) parsed.password = '***';
+    return parsed.toString();
+  } catch {
+    return '<invalid url>';
+  }
+}
+
+/**
+ * Initialize all cache instances using Valkey (via @valkey/valkey-glide).
+ * Must be awaited before serving requests; GLIDE requires async connection setup.
+ */
+export async function createCacheBackendsValkey(
+  valkeyUrl: string
+): Promise<void> {
+  logger.info(
+    'Creating cache backends with Valkey',
+    redactConnectionString(valkeyUrl)
+  );
+
+  const { createValkeyClient, parseValkeyConnectionString } = await import(
+    '../valkey/client'
+  );
+  const { addresses, options } = parseValkeyConnectionString(valkeyUrl);
+
+  // One shared connection per set of backends
+  const sharedClient = await createValkeyClient(addresses, options);
+
+  const parseTtl = (envVar: string, fallback: number): number => {
+    const val = parseInt(process.env[envVar] ?? '', 10);
+    return val > 0 ? val : fallback;
+  };
+
+  const defaultTtl = parseTtl('VALKEY_DEFAULT_TTL_MS', MS['5_MINUTES']);
+  const sessionTtl = parseTtl('VALKEY_SESSION_TTL_MS', MS['30_MINUTES']);
+  const configTtl = parseTtl('VALKEY_CONFIG_TTL_MS', MS['30_DAYS']);
+
+  defaultCache = new CacheService({
+    backend: 'valkey',
+    defaultTtl,
+    cleanupInterval: MS['5_MINUTES'],
+    maxSize: 1000,
+  });
+  defaultCache.setBackend(createValkeyBackend(sharedClient, 'default'));
+
+  tokenCache = new CacheService({
+    backend: 'memory',
+    defaultTtl: MS['1_MINUTE'],
+    cleanupInterval: MS['1_MINUTE'],
+    maxSize: 1000,
+  });
+
+  sessionCache = new CacheService({
+    backend: 'valkey',
+    defaultTtl: sessionTtl,
+  });
+  sessionCache.setBackend(createValkeyBackend(sharedClient, 'session'));
+
+  configCache = new CacheService({
+    backend: 'valkey',
+    defaultTtl: configTtl,
+  });
+  configCache.setBackend(createValkeyBackend(sharedClient, 'config'));
+
+  oauthStore = new CacheService({ backend: 'valkey' });
+  oauthStore.setBackend(createValkeyBackend(sharedClient, 'oauth'));
+
+  mcpServersCache = new CacheService({ backend: 'valkey' });
+  mcpServersCache.setBackend(createValkeyBackend(sharedClient, 'mcp'));
 }
 
 export function createCacheBackendsCF(env: any): void {

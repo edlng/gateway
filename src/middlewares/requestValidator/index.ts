@@ -275,12 +275,28 @@ export function isValidCustomHost(customHost: string, c?: Context) {
     const url = new URL(customHost);
     const protocol = url.protocol;
 
-    // Allow only HTTP(S)
-    if (protocol !== 'http:' && protocol !== 'https:') return false;
+    // Allow HTTP(S) and Valkey/Redis protocols (for valkey-search provider)
+    const allowedProtocols = [
+      'http:',
+      'https:',
+      'valkey:',
+      'valkeys:',
+      'redis:',
+      'rediss:',
+    ];
+    if (!allowedProtocols.includes(protocol)) return false;
 
-    // Disallow credentials and obfuscation
-    if (url.username || url.password) return false;
-    if (customHost.includes('@')) return false;
+    // Disallow credentials and obfuscation (except for valkey/redis where password-in-URL is standard)
+    const isValkeyScheme = [
+      'valkey:',
+      'valkeys:',
+      'redis:',
+      'rediss:',
+    ].includes(protocol);
+    if (!isValkeyScheme) {
+      if (url.username || url.password) return false;
+      if (customHost.includes('@')) return false;
+    }
 
     const host = url.hostname;
 

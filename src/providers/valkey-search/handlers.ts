@@ -31,6 +31,7 @@ type AnyGlideClient = GlideClient | GlideClusterClient;
 // ---------------------------------------------------------------------------
 // Client cache - reuse connections keyed by address string
 // ---------------------------------------------------------------------------
+const MAX_CLIENT_CACHE_SIZE = 50;
 const clientCache = new Map<string, Promise<AnyGlideClient>>();
 
 function getClient(customHost: string): Promise<AnyGlideClient> {
@@ -38,24 +39,40 @@ function getClient(customHost: string): Promise<AnyGlideClient> {
     ? customHost
     : `valkey://${customHost}`;
 
-  if (!clientCache.has(address)) {
-    const { addresses, options } = parseValkeyConnectionString(address);
-    const p = createValkeyClient(addresses, options).catch((err) => {
-      clientCache.delete(address);
-      throw err;
-    });
-    clientCache.set(address, p);
+  if (clientCache.has(address)) {
+    // Move to end (most recently used)
+    const existing = clientCache.get(address)!;
+    clientCache.delete(address);
+    clientCache.set(address, existing);
+    return existing;
   }
-  return clientCache.get(address)!;
+
+  // Evict oldest entry if at capacity
+  if (clientCache.size >= MAX_CLIENT_CACHE_SIZE) {
+    const oldest = clientCache.keys().next().value!;
+    const evicted = clientCache.get(oldest);
+    clientCache.delete(oldest);
+    evicted?.then((c) => c.close()).catch(() => {});
+  }
+
+  const { addresses, options } = parseValkeyConnectionString(address);
+  const p = createValkeyClient(addresses, options).catch((err) => {
+    clientCache.delete(address);
+    throw err;
+  });
+  clientCache.set(address, p);
+  return p;
 }
 
 // Graceful shutdown: close all cached GLIDE connections
 if (typeof process !== 'undefined') {
   const closeAll = async () => {
-    for (const [, p] of clientCache) {
+    for (const [addr, p] of clientCache) {
       try {
         (await p).close();
-      } catch {}
+      } catch (e) {
+        console.warn('[valkey-search] Error closing client:', addr, e);
+      }
     }
     clientCache.clear();
   };
@@ -103,14 +120,29 @@ function validateDocId(id: string): boolean {
 }
 
 /**
- * Security guard: reject filter strings containing "=>" to prevent KNN-clause injection.
- * A filter containing "=>" could allow an attacker to append their own KNN clause.
+ * Security guard: reject filter strings that could manipulate the query structure.
+ * Blocks "=>" (KNN-clause injection) and RediSearch control keywords/syntax
+ * that could alter query execution when interpolated into the filter clause.
  */
 function validateFilter(filter: unknown): string | null {
   if (filter === undefined || filter === null) return null;
   if (typeof filter !== 'string') return 'filter must be a string';
   if (filter.includes('=>')) {
     return 'filter expression must not contain "=>" (KNN-clause injection risk)';
+  }
+  // Block unbalanced parens that could break out of the (filter) wrapper
+  let depth = 0;
+  for (const ch of filter) {
+    if (ch === '(') depth++;
+    if (ch === ')') depth--;
+    if (depth < 0) return 'filter contains unbalanced parentheses';
+  }
+  if (depth !== 0) return 'filter contains unbalanced parentheses';
+  // Block RediSearch query modifiers that should not appear in a filter expression
+  const blocked =
+    /\b(SORTBY|LIMIT|RETURN|WITHSCORES|DIALECT|PARAMS|SUMMARIZE|HIGHLIGHT)\b/i;
+  if (blocked.test(filter)) {
+    return 'filter must not contain query modifiers (SORTBY, LIMIT, RETURN, etc.)';
   }
   return null;
 }
@@ -121,7 +153,11 @@ function validateFilter(filter: unknown): string | null {
  */
 function isIndexNotFoundError(err: any): boolean {
   const msg = err?.message ?? '';
-  return msg.includes('Unknown index') || msg.includes('no such index');
+  return (
+    msg.includes('Unknown index') ||
+    msg.includes('no such index') ||
+    msg.includes('not found')
+  );
 }
 
 const MAX_BATCH_SIZE = 1000;
@@ -397,7 +433,11 @@ export const upsertDocsHandler: RequestHandler = async ({
       await client.hset(key, fieldMap);
       results.push({ id: doc.id, status: 'upserted' });
     } catch (err: any) {
-      results.push({ id: doc.id, status: 'error', error: 'write failed' });
+      results.push({
+        id: doc.id,
+        status: 'error',
+        error: `write failed: ${(err.message ?? '').slice(0, 200)}`,
+      });
     }
   }
 
@@ -479,7 +519,9 @@ export const searchIndexHandler: RequestHandler = async ({
   };
 
   if (Array.isArray(return_fields) && return_fields.length > 0) {
-    searchParams.returnFields = return_fields;
+    searchParams.returnFields = return_fields.map((f: string) => ({
+      fieldIdentifier: f,
+    }));
   }
 
   try {

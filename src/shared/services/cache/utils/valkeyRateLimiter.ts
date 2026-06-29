@@ -6,7 +6,7 @@
  * for GLIDE's Script/invokeScript API. GLIDE manages script caching internally,
  * so there is no need to LOAD the script manually or handle NOSCRIPT errors.
  */
-import { GlideClient, Script } from '@valkey/valkey-glide';
+import { GlideClient, GlideClusterClient, Script } from '@valkey/valkey-glide';
 import { RateLimiterKeyTypes } from '../../../../globals';
 
 const RATE_LIMIT_LUA = `
@@ -97,7 +97,7 @@ class ValkeyRateLimiter {
   private key: string;
 
   constructor(
-    private client: GlideClient,
+    private client: GlideClient | GlideClusterClient,
     key: string,
     private capacity: number,
     private windowSize: number,

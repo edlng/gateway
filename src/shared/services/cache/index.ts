@@ -91,9 +91,32 @@ export class CacheService {
 
       case 'valkey':
         // Backend is injected post-construction by createCacheBackendsValkey()
-        // after the async GLIDE client is created. Return a memory placeholder
-        // that will be replaced before any requests are served.
-        return new MemoryCacheBackend();
+        // after the async GLIDE client is created. Operations throw until then.
+        return {
+          async get() {
+            throw new Error('Valkey cache not initialized yet');
+          },
+          async set() {
+            throw new Error('Valkey cache not initialized yet');
+          },
+          async delete() {
+            throw new Error('Valkey cache not initialized yet');
+          },
+          async clear() {
+            throw new Error('Valkey cache not initialized yet');
+          },
+          async has() {
+            throw new Error('Valkey cache not initialized yet');
+          },
+          async keys() {
+            throw new Error('Valkey cache not initialized yet');
+          },
+          async getStats() {
+            throw new Error('Valkey cache not initialized yet');
+          },
+          async cleanup() {},
+          async close() {},
+        } as CacheBackend;
 
       default:
         throw new Error(`Unsupported cache backend: ${config.backend}`);

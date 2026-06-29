@@ -247,7 +247,7 @@ export class ValkeyCacheBackend implements CacheBackend {
 
   async close(): Promise<void> {
     try {
-      await this.client.close();
+      this.client.close();
       logger.debug('Valkey cache backend closed');
     } catch (error) {
       logger.error('Error closing Valkey connection:', error);

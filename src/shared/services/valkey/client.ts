@@ -71,10 +71,12 @@ export function parseValkeyConnectionString(connectionString: string): {
   addresses: Array<{ host: string; port: number }>;
   options: ValkeyClientOptions;
 } {
+  const redact = (s: string) => s.replace(/\/\/[^@]*@/, '//***@');
+
   const schemeMatch = connectionString.match(/^([a-zA-Z]+):\/\//);
   if (!schemeMatch) {
     throw new Error(
-      `Invalid Valkey connection string: "${connectionString}". ` +
+      `Invalid Valkey connection string: "${redact(connectionString)}". ` +
         'Expected format: valkey://[password@]host:port[,host2:port2][?cluster=true]'
     );
   }
@@ -110,7 +112,7 @@ export function parseValkeyConnectionString(connectionString: string): {
 
   if (!hostsPart) {
     throw new Error(
-      `Missing host in Valkey connection string: "${connectionString}"`
+      `Missing host in Valkey connection string: "${redact(connectionString)}"`
     );
   }
 
@@ -125,7 +127,7 @@ export function parseValkeyConnectionString(connectionString: string): {
     const port = parseInt(portStr, 10);
     if (isNaN(port) || port < 1 || port > 65535) {
       throw new Error(
-        `Invalid port "${portStr}" in Valkey connection string: "${connectionString}"`
+        `Invalid port "${portStr}" in Valkey connection string: "${redact(connectionString)}"`
       );
     }
     return { host, port };
@@ -133,7 +135,7 @@ export function parseValkeyConnectionString(connectionString: string): {
 
   if (!addresses[0].host) {
     throw new Error(
-      `Missing host in Valkey connection string: "${connectionString}"`
+      `Missing host in Valkey connection string: "${redact(connectionString)}"`
     );
   }
 

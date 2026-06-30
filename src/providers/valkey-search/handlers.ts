@@ -71,7 +71,11 @@ if (typeof process !== 'undefined') {
       try {
         (await p).close();
       } catch (e) {
-        console.warn('[valkey-search] Error closing client:', addr, e);
+        console.warn(
+          '[valkey-search] Error closing client:',
+          addr.replace(/\/\/[^@]*@/, '//***@'),
+          e
+        );
       }
     }
     clientCache.clear();
@@ -162,6 +166,28 @@ function isIndexNotFoundError(err: any): boolean {
 
 const MAX_BATCH_SIZE = 1000;
 
+/**
+ * Shared connection boilerplate: validate customHost, acquire a GLIDE client.
+ * Returns the client on success or a pre-built error Response on failure.
+ */
+async function requireClient(providerOptions: {
+  customHost?: string;
+}): Promise<AnyGlideClient | Response> {
+  const customHost = providerOptions.customHost || '';
+  if (!customHost) {
+    return errorResponse(
+      'customHost is required for valkey-search provider',
+      400
+    );
+  }
+  try {
+    return await getClient(customHost);
+  } catch (err: any) {
+    console.error('[valkey-search] Connection failed:', err.message);
+    return errorResponse('Service temporarily unavailable', 503);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Schema conversion helper
 // ---------------------------------------------------------------------------
@@ -177,9 +203,14 @@ const MAX_BATCH_SIZE = 1000;
  * The user may pass either the GLIDE key names (dimensions, distanceMetric) or
  * the shorthand aliases used in our API (dims, distance).
  */
-function buildFields(schema: Record<string, any>): Field[] {
-  return Object.entries(schema).map(([fieldName, config]) => {
+function buildFields(schema: Record<string, any>): Field[] | string {
+  const ALLOWED_TYPES = new Set(['VECTOR', 'TAG', 'NUMERIC', 'TEXT']);
+  const fields: Field[] = [];
+  for (const [fieldName, config] of Object.entries(schema)) {
     const type = (config.type as string).toUpperCase();
+    if (!ALLOWED_TYPES.has(type)) {
+      return `Unsupported field type "${type}" for field "${fieldName}". Allowed: VECTOR, TAG, NUMERIC, TEXT`;
+    }
     if (type === 'VECTOR') {
       const algorithm = (config.algorithm ?? 'HNSW') as 'HNSW' | 'FLAT';
       const dimensions = config.dims ?? config.dimensions;
@@ -187,18 +218,20 @@ function buildFields(schema: Record<string, any>): Field[] {
         | 'L2'
         | 'IP'
         | 'COSINE';
-      return {
+      fields.push({
         type: 'VECTOR' as const,
         name: fieldName,
         attributes: { algorithm, dimensions, distanceMetric },
-      };
+      });
+    } else if (type === 'TAG') {
+      fields.push({ type: 'TAG' as const, name: fieldName });
+    } else if (type === 'NUMERIC') {
+      fields.push({ type: 'NUMERIC' as const, name: fieldName });
+    } else {
+      fields.push({ type: 'TEXT' as const, name: fieldName });
     }
-    if (type === 'TAG') return { type: 'TAG' as const, name: fieldName };
-    if (type === 'NUMERIC')
-      return { type: 'NUMERIC' as const, name: fieldName };
-    // default to TEXT
-    return { type: 'TEXT' as const, name: fieldName };
-  });
+  }
+  return fields;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,21 +253,9 @@ export const createIndexHandler: RequestHandler = async ({
     return errorResponse('schema is required and must be an object');
   }
 
-  const customHost = providerOptions.customHost || '';
-  if (!customHost) {
-    return errorResponse(
-      'customHost is required for valkey-search provider',
-      400
-    );
-  }
-
-  let client: AnyGlideClient;
-  try {
-    client = await getClient(customHost);
-  } catch (err: any) {
-    console.error('[valkey-search] Connection failed:', err.message);
-    return errorResponse('Service temporarily unavailable', 503);
-  }
+  const clientOrError = await requireClient(providerOptions);
+  if (clientOrError instanceof Response) return clientOrError;
+  const client = clientOrError;
 
   // Check if index already exists
   try {
@@ -249,7 +270,11 @@ export const createIndexHandler: RequestHandler = async ({
   }
 
   try {
-    const fields = buildFields(schema);
+    const fieldsOrError = buildFields(schema);
+    if (typeof fieldsOrError === 'string') {
+      return errorResponse(fieldsOrError);
+    }
+    const fields = fieldsOrError;
     const ftOptions = indexOptions
       ? {
           dataType: (indexOptions.dataType ?? 'HASH') as 'HASH' | 'JSON',
@@ -278,21 +303,9 @@ export const dropIndexHandler: RequestHandler = async ({
   const nameError = validateIndexName(name);
   if (nameError) return errorResponse(nameError);
 
-  const customHost = providerOptions.customHost || '';
-  if (!customHost) {
-    return errorResponse(
-      'customHost is required for valkey-search provider',
-      400
-    );
-  }
-
-  let client: AnyGlideClient;
-  try {
-    client = await getClient(customHost);
-  } catch (err: any) {
-    console.error('[valkey-search] Connection failed:', err.message);
-    return errorResponse('Service temporarily unavailable', 503);
-  }
+  const clientOrError = await requireClient(providerOptions);
+  if (clientOrError instanceof Response) return clientOrError;
+  const client = clientOrError;
 
   // Pre-validate: raise if index missing
   try {
@@ -326,21 +339,9 @@ export const getIndexHandler: RequestHandler = async ({
   const nameError = validateIndexName(name);
   if (nameError) return errorResponse(nameError);
 
-  const customHost = providerOptions.customHost || '';
-  if (!customHost) {
-    return errorResponse(
-      'customHost is required for valkey-search provider',
-      400
-    );
-  }
-
-  let client: AnyGlideClient;
-  try {
-    client = await getClient(customHost);
-  } catch (err: any) {
-    console.error('[valkey-search] Connection failed:', err.message);
-    return errorResponse('Service temporarily unavailable', 503);
-  }
+  const clientOrError = await requireClient(providerOptions);
+  if (clientOrError instanceof Response) return clientOrError;
+  const client = clientOrError;
 
   try {
     const info = await GlideFt.info(client, name);
@@ -383,21 +384,9 @@ export const upsertDocsHandler: RequestHandler = async ({
     );
   }
 
-  const customHost = providerOptions.customHost || '';
-  if (!customHost) {
-    return errorResponse(
-      'customHost is required for valkey-search provider',
-      400
-    );
-  }
-
-  let client: AnyGlideClient;
-  try {
-    client = await getClient(customHost);
-  } catch (err: any) {
-    console.error('[valkey-search] Connection failed:', err.message);
-    return errorResponse('Service temporarily unavailable', 503);
-  }
+  const clientOrError = await requireClient(providerOptions);
+  if (clientOrError instanceof Response) return clientOrError;
+  const client = clientOrError;
 
   const results: Array<{ id: string; status: string; error?: string }> = [];
 
@@ -478,21 +467,9 @@ export const searchIndexHandler: RequestHandler = async ({
   const filterError = validateFilter(filter);
   if (filterError) return errorResponse(filterError);
 
-  const customHost = providerOptions.customHost || '';
-  if (!customHost) {
-    return errorResponse(
-      'customHost is required for valkey-search provider',
-      400
-    );
-  }
-
-  let client: AnyGlideClient;
-  try {
-    client = await getClient(customHost);
-  } catch (err: any) {
-    console.error('[valkey-search] Connection failed:', err.message);
-    return errorResponse('Service temporarily unavailable', 503);
-  }
+  const clientOrError = await requireClient(providerOptions);
+  if (clientOrError instanceof Response) return clientOrError;
+  const client = clientOrError;
 
   // Pre-validate index exists
   try {
@@ -531,7 +508,34 @@ export const searchIndexHandler: RequestHandler = async ({
       query,
       searchParams
     );
-    return jsonResponse({ object: 'list', data: results });
+    // results: [number, GlideRecord<GlideRecord<GlideString>>]
+    // GlideRecord is {key, value}[] — transform to consumer-friendly objects.
+    // With Decoder.Bytes, values are Buffer objects. Decode to UTF-8 where
+    // valid; skip fields that contain raw binary (e.g. vector embeddings).
+    const [totalCount, records] = results;
+    const hits = (records as any[]).map(({ key: docId, value: fields }) => {
+      const doc: Record<string, string> = {};
+      for (const { key: fieldName, value: fieldValue } of fields) {
+        const name = Buffer.isBuffer(fieldName)
+          ? fieldName.toString('utf8')
+          : String(fieldName);
+        // Skip binary vector fields — they cannot be meaningfully serialized as JSON strings
+        if (Buffer.isBuffer(fieldValue)) {
+          const str = fieldValue.toString('utf8');
+          // If decoding produces replacement chars, it's likely binary — omit
+          if (!str.includes('\ufffd') && fieldValue.length < 10000) {
+            doc[name] = str;
+          }
+        } else {
+          doc[name] = String(fieldValue);
+        }
+      }
+      return {
+        id: Buffer.isBuffer(docId) ? docId.toString('utf8') : String(docId),
+        fields: doc,
+      };
+    });
+    return jsonResponse({ object: 'list', total: totalCount, data: hits });
   } catch (err: any) {
     console.error('[valkey-search] FT.SEARCH failed:', err.message);
     return errorResponse('Search failed', 500);
@@ -557,6 +561,11 @@ export const deleteDocsHandler: RequestHandler = async ({
   if (!Array.isArray(ids) || ids.length === 0) {
     return errorResponse('ids must be a non-empty array of strings');
   }
+  if (ids.length > MAX_BATCH_SIZE) {
+    return errorResponse(
+      `ids array exceeds maximum batch size of ${MAX_BATCH_SIZE}`
+    );
+  }
 
   const invalidId = ids.find((id) => !validateDocId(id));
   if (invalidId !== undefined) {
@@ -565,21 +574,9 @@ export const deleteDocsHandler: RequestHandler = async ({
     );
   }
 
-  const customHost = providerOptions.customHost || '';
-  if (!customHost) {
-    return errorResponse(
-      'customHost is required for valkey-search provider',
-      400
-    );
-  }
-
-  let client: AnyGlideClient;
-  try {
-    client = await getClient(customHost);
-  } catch (err: any) {
-    console.error('[valkey-search] Connection failed:', err.message);
-    return errorResponse('Service temporarily unavailable', 503);
-  }
+  const clientOrError = await requireClient(providerOptions);
+  if (clientOrError instanceof Response) return clientOrError;
+  const client = clientOrError;
 
   const keys = ids.map((id) => `${indexName}:${id}`);
 

@@ -196,8 +196,10 @@ export class ValkeyCacheBackend implements CacheBackend {
 
   /**
    * Cluster client uses ClusterScanCursor; standalone uses string cursor.
+   * Capped at MAX_SCAN_KEYS to prevent unbounded iteration on large keyspaces.
    */
   private async scanKeys(pattern: string): Promise<string[]> {
+    const MAX_SCAN_KEYS = 10_000;
     const result: string[] = [];
 
     if (this.client instanceof GlideClusterClient) {
@@ -211,6 +213,12 @@ export class ValkeyCacheBackend implements CacheBackend {
         });
         cursor = nextCursor;
         result.push(...keys.map((k) => k.toString()));
+        if (result.length >= MAX_SCAN_KEYS) {
+          logger.warn(
+            `scanKeys truncated at ${MAX_SCAN_KEYS} — pattern may match too broadly: ${pattern}`
+          );
+          break;
+        }
       }
     } else {
       let cursor: GlideString = '0';
@@ -221,6 +229,12 @@ export class ValkeyCacheBackend implements CacheBackend {
         });
         cursor = scanResult[0];
         result.push(...scanResult[1].map((k) => k.toString()));
+        if (result.length >= MAX_SCAN_KEYS) {
+          logger.warn(
+            `scanKeys truncated at ${MAX_SCAN_KEYS} — pattern may match too broadly: ${pattern}`
+          );
+          break;
+        }
       } while (cursor.toString() !== '0');
     }
 

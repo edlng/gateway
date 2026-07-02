@@ -20,6 +20,7 @@ import {
   Decoder,
   Field,
 } from '@valkey/valkey-glide';
+import { createHash } from 'crypto';
 import {
   createValkeyClient,
   parseValkeyConnectionString,
@@ -39,11 +40,14 @@ function getClient(customHost: string): Promise<AnyGlideClient> {
     ? customHost
     : `valkey://${customHost}`;
 
-  if (clientCache.has(address)) {
+  // Hash the address to avoid storing credentials in Map keys (heap dump safety)
+  const cacheKey = createHash('sha256').update(address).digest('hex');
+
+  if (clientCache.has(cacheKey)) {
     // Move to end (most recently used)
-    const existing = clientCache.get(address)!;
-    clientCache.delete(address);
-    clientCache.set(address, existing);
+    const existing = clientCache.get(cacheKey)!;
+    clientCache.delete(cacheKey);
+    clientCache.set(cacheKey, existing);
     return existing;
   }
 
@@ -57,23 +61,22 @@ function getClient(customHost: string): Promise<AnyGlideClient> {
 
   const { addresses, options } = parseValkeyConnectionString(address);
   const p = createValkeyClient(addresses, options).catch((err) => {
-    clientCache.delete(address);
+    clientCache.delete(cacheKey);
     throw err;
   });
-  clientCache.set(address, p);
+  clientCache.set(cacheKey, p);
   return p;
 }
 
 // Graceful shutdown: close all cached GLIDE connections
 if (typeof process !== 'undefined') {
   const closeAll = async () => {
-    for (const [addr, p] of clientCache) {
+    for (const [, p] of clientCache) {
       try {
         (await p).close();
       } catch (e) {
         console.warn(
-          '[valkey-search] Error closing client:',
-          addr.replace(/\/\/[^@]*@/, '//***@'),
+          '[valkey-search] Error closing client during shutdown:',
           e
         );
       }

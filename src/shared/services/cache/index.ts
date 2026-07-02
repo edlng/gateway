@@ -91,28 +91,33 @@ export class CacheService {
 
       case 'valkey':
         // Backend is injected post-construction by createCacheBackendsValkey()
-        // after the async GLIDE client is created. Operations throw until then.
+        // after the async GLIDE client is created. Returns safe no-ops until then,
+        // allowing callers without try/catch (config, session, OAuth) to degrade
+        // gracefully rather than throwing unhandled 500s during startup.
         return {
           async get() {
-            throw new Error('Valkey cache not initialized yet');
+            return null;
           },
-          async set() {
-            throw new Error('Valkey cache not initialized yet');
-          },
+          async set() {},
           async delete() {
-            throw new Error('Valkey cache not initialized yet');
+            return false;
           },
-          async clear() {
-            throw new Error('Valkey cache not initialized yet');
-          },
+          async clear() {},
           async has() {
-            throw new Error('Valkey cache not initialized yet');
+            return false;
           },
           async keys() {
-            throw new Error('Valkey cache not initialized yet');
+            return [];
           },
           async getStats() {
-            throw new Error('Valkey cache not initialized yet');
+            return {
+              hits: 0,
+              misses: 0,
+              sets: 0,
+              deletes: 0,
+              size: 0,
+              expired: 0,
+            };
           },
           async cleanup() {},
           async close() {},

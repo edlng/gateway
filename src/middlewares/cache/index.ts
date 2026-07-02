@@ -1,17 +1,12 @@
 import { Context } from 'hono';
 import { getDefaultCache } from '../../shared/services/cache/index';
 
-let defaultCacheService: any = null;
-
 function getLLMCache() {
-  if (!defaultCacheService) {
-    try {
-      defaultCacheService = getDefaultCache();
-    } catch {
-      // Cache not initialized yet - fall through to in-memory
-    }
+  try {
+    return getDefaultCache();
+  } catch {
+    return null;
   }
-  return defaultCacheService;
 }
 
 const inMemoryCache: any = {};

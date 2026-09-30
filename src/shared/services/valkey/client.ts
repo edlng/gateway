@@ -25,6 +25,7 @@ export async function createStandaloneClient(
     useTLS: options?.useTLS ?? false,
     requestTimeout: options?.requestTimeout ?? 5000,
     advancedConfiguration: { connectionTimeout: 5000 },
+    clientInfoTag: 'portkey',
   };
 
   if (options?.password) {
@@ -43,6 +44,7 @@ export async function createClusterClient(
     useTLS: options?.useTLS ?? false,
     requestTimeout: options?.requestTimeout ?? 5000,
     advancedConfiguration: { connectionTimeout: 5000 },
+    clientInfoTag: 'portkey',
   };
   if (options?.password) {
     config.credentials = { password: options.password };
